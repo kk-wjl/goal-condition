@@ -135,7 +135,6 @@ Test waypoints generator with 2D visualization:
 PYTHONPATH=. uv run python tests/test_waypointcvae.py
 ```
 
-```
 Test rollout generator:
 
 ```bash
