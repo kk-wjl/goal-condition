@@ -39,7 +39,7 @@ except ModuleNotFoundError:
         WaypointLAFAN1Dataset,
     )
 
-from goal_condition.cvae import ConditionVAE, diagonal_gaussian_kl
+from goal_condition.cvae import ConditionVAE, diagonal_gaussian_kl, split_gaussian_params
 from goal_condition.datasets.lafan1 import (
     LAFAN1Dataset,
     POSE_BASE_DIM,
@@ -112,6 +112,23 @@ class Config:
     high_checkpoint: str | None = None
     low_checkpoint: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.chunk.prefix_frames != self.cond_steps:
+            raise ValueError(
+                "Expected chunk.prefix_frames == cond_steps, "
+                f"got prefix_frames={self.chunk.prefix_frames}, cond_steps={self.cond_steps}"
+            )
+        if self.chunk.chunk_len - self.chunk.prefix_frames != (
+            self.seq_len - self.cond_steps
+        ) * (self.chunk.num_waypoints + 1):
+            raise ValueError(
+                "Expected chunk_len - prefix_frames == "
+                "(seq_len - cond_steps) * (num_waypoints + 1), "
+                f"got chunk_len={self.chunk.chunk_len}, prefix_frames={self.chunk.prefix_frames}, "
+                f"seq_len={self.seq_len}, cond_steps={self.cond_steps}, "
+                f"num_waypoints={self.chunk.num_waypoints}"
+            )
+
 # angular transformation
 def _yaw_from_rot6d(rot6d: torch.Tensor) -> torch.Tensor:
     rot = rot6d_to_matrix(rot6d)
@@ -173,13 +190,13 @@ class WaypointCVAE(ConditionVAE):
         condition: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         inputs = torch.cat([waypoints.flatten(1), condition], dim=-1)
-        return super().encode_posterior(inputs, condition)
+        return split_gaussian_params(self.posterior(inputs))
 
     def encode_prior(self, condition: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return super().encode_prior(condition)
+        return split_gaussian_params(self.prior(condition))
 
     def decode(self, z: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
-        decoded = super().decode(z, condition)
+        decoded = self.decoder_network(torch.cat([z, condition], dim=-1))
         decoded = decoded.view(-1, self.num_waypoints, WAYPOINT_DIM)
         yaw_vector = torch.nn.functional.normalize(decoded[..., 2:4], dim=-1, eps=1e-6)
         return torch.cat([decoded[..., :2], yaw_vector], dim=-1)
@@ -779,6 +796,21 @@ def _goal_frame_from_waypoint(
     return goal_frame
 
 
+def _convert_waypoints_between_datasets(
+    waypoints: torch.Tensor,
+    source_dataset: WaypointLAFAN1Dataset,
+    target_dataset: LocalGoalLAFAN1Dataset,
+) -> torch.Tensor:
+    """Convert waypoint xy normalization from the high-level dataset into the low-level dataset."""
+    xy_m = source_dataset.waypoint_xy_to_meters(waypoints[..., :2])
+    target_xy_scale = target_dataset.base._root_pos_std[:2].to(
+        device=waypoints.device,
+        dtype=waypoints.dtype,
+    )
+    yaw_vec = torch.nn.functional.normalize(waypoints[..., 2:4], dim=-1, eps=1e-6)
+    return torch.cat([xy_m / target_xy_scale, yaw_vec], dim=-1)
+
+
 @torch.no_grad()
 def rollout_local_trajectory(
     flow: LinearFlow,
@@ -959,7 +991,17 @@ def run_rollout(config: Config, device: torch.device) -> None:
         eps = torch.randn_like(prior_mu)
         z = prior_mu + torch.exp(0.5 * prior_logvar) * eps
         predicted_waypoints = high_model.decode(z, condition)[0].cpu()
-        goals = torch.cat([predicted_waypoints, cast(torch.Tensor, sample["goal"]).unsqueeze(0)], dim=0)
+        predicted_waypoints_low = _convert_waypoints_between_datasets(
+            predicted_waypoints,
+            rollout_dataset,
+            local_dataset,
+        )
+        target_goal_low = _convert_waypoints_between_datasets(
+            cast(torch.Tensor, sample["goal"]).unsqueeze(0),
+            rollout_dataset,
+            local_dataset,
+        )[0]
+        goals = torch.cat([predicted_waypoints_low, target_goal_low.unsqueeze(0)], dim=0)
 
         clip_idx = int(cast(torch.Tensor, sample["clip_index"]))
         frame_start = int(cast(torch.Tensor, sample["frame_start"]))
@@ -996,6 +1038,7 @@ def run_rollout(config: Config, device: torch.device) -> None:
         csv_qpos = base.trajectory_to_lafan1_csv_qpos(rollout)
         csv_name = f"sample_{sample_index:03d}.csv"
         np.savetxt(out_dir / csv_name, csv_qpos.numpy(), delimiter=",", fmt="%.8f")
+        final_goal_yaw = float(_yaw_from_rot6d(target_local[-1, ROOT_ROT_OFFSET:POSE_BASE_DIM]).item())
         sample_records.append(
             {
                 "sample_index": sample_index,
@@ -1003,6 +1046,11 @@ def run_rollout(config: Config, device: torch.device) -> None:
                 "clip_name": cast(str, sample["clip_name"]),
                 "frame_start": frame_start,
                 "rollout_len": int(rollout.shape[0]),
+                "relative_goal_state": {
+                    "x": float(target_local[-1, 0].item()),
+                    "y": float(target_local[-1, 1].item()),
+                    "yaw_rad": final_goal_yaw,
+                },
                 "final_goal_xy_error": final_goal_xy_error,
                 "final_goal_yaw_error_rad": final_goal_yaw_error,
                 "goal_reached": goal_reached,

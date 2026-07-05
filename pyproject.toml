@@ -5,29 +5,38 @@ build-backend = "hatchling.build"
 [project]
 name = "goal-condition"
 version = "0.1.0"
-description = "Add your description here"
+description = "Goal-conditioned generative modeling experiments for motion data."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11,<3.13"
 dependencies = [
-    "huggingface_hub>=0.28.0",
-    "pyyaml>=6.0.2",
-    "jaxtyping>=0.3.9",
-    "matplotlib>=3.10.8",
-    "mujoco>=3.6.0",
-    "numpy>=2.4.4",
+    "huggingface_hub>=0.28,<1",
+    "jaxtyping>=0.3.9,<0.4",
+    "numpy>=1.26,<3",
+    "pyyaml>=6.0.2,<7",
+    "torch==2.5.1",
+    "tqdm>=4.67,<5",
+    "wandb>=0.19,<1",
+]
+
+[dependency-groups]
+dev = [
+    "matplotlib>=3.8,<4",
     "pyright>=1.1.408",
-    "rerun-sdk==0.22.0",
-    "scikit-learn>=1.8.0",
-    "torch==2.10",
-    "torchvision==0.25",
-    "tqdm>=4.67.3",
-    "wandb>=0.25.1",
-    "pytest>=9.0.3",
-    "datasets>=5.0.0",
+    "pytest>=8,<10",
 ]
 
 [tool.pyright]
 extraPaths = ["src"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cu124", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/goal_condition"]

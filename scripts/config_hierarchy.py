@@ -19,10 +19,10 @@ WAYPOINT_DIM = 4  # local x, local y, sin(yaw), cos(yaw)
 
 @dataclass
 class ChunkConfig:
-    chunk_len: int = 160
+    chunk_len: int = 256
     chunk_stride: int = 30
     prefix_frames: int = 4
-    num_waypoints: int = 4
+    num_waypoints: int = 8
 
     def __post_init__(self) -> None:
         if self.chunk_len <= self.prefix_frames + self.num_waypoints:

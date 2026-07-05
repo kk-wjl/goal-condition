@@ -127,6 +127,19 @@ Run hierarchy rollout with saved checkpoints:
 
 ```bash
 uv run python scripts/FM_lafan1_hierarchy.py --mode rollout
+
+```
+Test waypoints generator with 2D visualization:
+
+```bash
+PYTHONPATH=. uv run python tests/test_waypointcvae.py
+```
+
+```
+Test rollout generator:
+
+```bash
+PYTHONPATH=. uv run python tests/test_hierarchy_rollout.py
 ```
 
 Run static checks:

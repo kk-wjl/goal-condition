@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Literal, cast
 
@@ -30,6 +31,8 @@ _DEFAULT_CHECKPOINT = (
 )
 _DEFAULT_OUTPUT_DIR = _ROOT / "tests" / "outputs" / "waypoint"
 
+_NUMBERED_OUTPUT_DIR_RE = re.compile(r"^(?P<stem>.+)_(?P<index>\d+)$")
+
 
 def _load_checkpoint_config(path: Path) -> Config:
     raw_config = dict(read_training_checkpoint_config(path))
@@ -37,6 +40,27 @@ def _load_checkpoint_config(path: Path) -> Config:
         raw_config.pop(deprecated_key, None)
     chunk_cfg = ChunkConfig(**raw_config.pop("chunk"))
     return Config(chunk=chunk_cfg, **raw_config)
+
+
+def _resolve_output_dir(output_dir: Path) -> Path:
+    match = _NUMBERED_OUTPUT_DIR_RE.fullmatch(output_dir.name)
+    if match is not None:
+        return output_dir
+
+    parent = output_dir
+    stem = output_dir.name
+    next_index = 0
+
+    if parent.exists():
+        for child in parent.iterdir():
+            if not child.is_dir():
+                continue
+            child_match = _NUMBERED_OUTPUT_DIR_RE.fullmatch(child.name)
+            if child_match is None or child_match.group("stem") != stem:
+                continue
+            next_index = max(next_index, int(child_match.group("index")) + 1)
+
+    return parent / f"{stem}_{next_index:03d}"
 
 
 def _plot_waypoint_xy(
@@ -194,6 +218,8 @@ def evaluate_checkpoint(
                 prior_mean[i],
                 sampled_paths[i],
             )
+            goal_xy = dataset.waypoint_xy_to_meters(goal[i]).cpu().tolist()
+            goal_yaw = float(torch.atan2(goal[i, 2], goal[i, 3]).cpu())
             generated_yaw = torch.atan2(prior_mean[i, :, 2], prior_mean[i, :, 3]).cpu().tolist()
             target_yaw = torch.atan2(target[i, :, 2], target[i, :, 3]).cpu().tolist()
             sample_records.append(
@@ -202,7 +228,7 @@ def evaluate_checkpoint(
                     "clip_index": int(batch["clip_index"][i]),
                     "clip_name": batch["clip_name"][i],
                     "frame_start": int(batch["frame_start"][i]),
-                    "goal_xy": dataset.waypoint_xy_to_meters(goal[i]).cpu().tolist(),
+                    "goal_xyyaw": [goal_xy[0], goal_xy[1], goal_yaw],
                     "generated_waypoint_xy": dataset.waypoint_xy_to_meters(prior_mean[i]).cpu().tolist(),
                     "target_waypoint_xy": dataset.waypoint_xy_to_meters(target[i]).cpu().tolist(),
                     "generated_waypoint_yaw_rad": generated_yaw,
@@ -247,13 +273,14 @@ def main() -> None:
     checkpoint_path = args.checkpoint.resolve()
     if not checkpoint_path.is_file():
         raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+    output_dir = _resolve_output_dir(args.output_dir.resolve())
     metrics = evaluate_checkpoint(
         checkpoint_path,
         split=cast(Literal["train", "val"], args.split),
         num_samples=args.num_samples,
         num_prior_samples=args.num_prior_samples,
         seed=args.seed,
-        output_dir=args.output_dir.resolve(),
+        output_dir=output_dir,
         data_root=args.data_root,
         robot=cast(RobotName | None, args.robot),
     )
@@ -262,6 +289,8 @@ def main() -> None:
 
 def test_waypoint_eval_smoke() -> None:
     assert _DEFAULT_OUTPUT_DIR.name == "waypoint"
+    assert _resolve_output_dir(_DEFAULT_OUTPUT_DIR) == _DEFAULT_OUTPUT_DIR / "waypoint_000"
+    assert _resolve_output_dir(_DEFAULT_OUTPUT_DIR.parent / "waypoint_007").name == "waypoint_007"
     assert callable(evaluate_checkpoint)
     assert callable(parse_args)
 
